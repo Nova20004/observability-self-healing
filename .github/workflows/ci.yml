@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+  # Keep in sync with docker-compose.yml and Makefile.
+  PROMETHEUS_IMAGE: prom/prometheus:v3.16.0
+  ALERTMANAGER_IMAGE: prom/alertmanager:v0.35.0
+  HADOLINT_IMAGE: hadolint/hadolint:v2.15.1
+  TRIVY_IMAGE: aquasec/trivy:0.76.2
+
+jobs:
+  lint:
+    name: Lint (yamllint, ruff, hadolint, shellcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: yamllint
+        run: yamllint --strict .
+      - name: ruff
+        run: |
+          ruff check app webhook
+          ruff format --check app webhook
+      - name: hadolint
+        run: |
+          docker run --rm -i "$HADOLINT_IMAGE" < app/Dockerfile
+          docker run --rm -i "$HADOLINT_IMAGE" < webhook/Dockerfile
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh
+
+  validate-monitoring:
+    name: Validate monitoring config (promtool, amtool, compose)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: promtool check config
+        run: >-
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro"
+          "$PROMETHEUS_IMAGE" check config /etc/prometheus/prometheus.yml
+      - name: promtool check rules
+        run: >-
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro"
+          "$PROMETHEUS_IMAGE" check rules /etc/prometheus/alerts.yml
+      - name: promtool test rules
+        run: >-
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro"
+          -w /etc/prometheus/tests "$PROMETHEUS_IMAGE" test rules alerts.test.yml
+      - name: amtool check-config
+        run: >-
+          docker run --rm --entrypoint amtool -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro"
+          "$ALERTMANAGER_IMAGE" check-config /etc/alertmanager/alertmanager.yml
+      - name: docker compose config
+        run: docker compose --env-file .env.example config --quiet
+      - name: Grafana dashboard is valid JSON
+        run: python3 -m json.tool monitoring/grafana/provisioning/dashboards/service-overview.json > /dev/null
+
+  test:
+    name: Unit tests (pytest)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: app tests
+        working-directory: app
+        run: python -m pytest -q
+      - name: webhook tests
+        working-directory: webhook
+        run: python -m pytest -q
+
+  security:
+    name: Security scan (Trivy)
+    runs-on: ubuntu-24.04
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build images
+        run: |
+          docker build -t obs-selfheal/app:ci app
+          docker build -t obs-selfheal/webhook:ci webhook
+      - name: Trivy secret + misconfiguration scan (repository)
+        run: >-
+          docker run --rm -v "$PWD:/src:ro" "$TRIVY_IMAGE"
+          fs --scanners secret,misconfig --severity HIGH,CRITICAL --exit-code 1 /src
+      - name: Trivy vulnerability scan (images)
+        run: |
+          for image in obs-selfheal/app:ci obs-selfheal/webhook:ci; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro "$TRIVY_IMAGE" \
+              image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 "$image"
+          done

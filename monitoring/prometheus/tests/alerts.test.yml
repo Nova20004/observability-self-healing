@@ -1,0 +1,126 @@
+rule_files:
+  - ../alerts.yml
+
+evaluation_interval: 5s
+
+tests:
+  - name: HighCPUUsage fires on sustained CPU burn
+    interval: 5s
+    input_series:
+      # +4 CPU-seconds every 5s = 0.8 cores.
+      - series: 'process_cpu_seconds_total{job="app",service="app",instance="app:8000"}'
+        values: "0+4x30"
+    alert_rule_test:
+      - eval_time: 10s
+        alertname: HighCPUUsage
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: HighCPUUsage
+        exp_alerts:
+          - exp_labels:
+              alertname: HighCPUUsage
+              severity: warning
+              remediation: restart
+              job: app
+              service: app
+              instance: app:8000
+            exp_annotations:
+              summary: "app CPU usage is high"
+              description: "app:8000 is using 80% of a CPU core (threshold 50%)."
+
+  - name: HighCPUUsage stays quiet under normal load
+    interval: 5s
+    input_series:
+      - series: 'process_cpu_seconds_total{job="app",service="app",instance="app:8000"}'
+        values: "0+0.1x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighCPUUsage
+        exp_alerts: []
+
+  - name: ServiceDown fires after 20s of failed scrapes
+    interval: 5s
+    input_series:
+      - series: 'up{job="app",service="app",instance="app:8000"}'
+        values: "1 1 0x20"
+    alert_rule_test:
+      - eval_time: 20s
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              alertname: ServiceDown
+              severity: critical
+              remediation: restart
+              job: app
+              service: app
+              instance: app:8000
+            exp_annotations:
+              summary: "app is down"
+              description: "Prometheus cannot scrape app:8000; the remediation webhook will restart it."
+
+  - name: HighLatencySpike fires when p95 exceeds 250ms
+    interval: 5s
+    input_series:
+      # Every request lands in the (0.25s, 0.5s] bucket.
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/work",le="0.1"}'
+        values: "0+0x30"
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/work",le="0.25"}'
+        values: "0+0x30"
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/work",le="0.5"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/work",le="+Inf"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 10s
+        alertname: HighLatencySpike
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: HighLatencySpike
+        exp_alerts:
+          - exp_labels:
+              alertname: HighLatencySpike
+              severity: warning
+              remediation: shed_load
+              job: app
+              service: app
+              instance: app:8000
+            exp_annotations:
+              summary: "app p95 latency is high"
+              description: "app:8000 p95 latency is 487.5ms (threshold 250ms); load-shedding will be enabled."
+
+  - name: HighLatencySpike stays quiet for fast requests
+    interval: 5s
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/",le="0.1"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/",le="0.25"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_bucket{job="app",service="app",instance="app:8000",method="GET",path="/",le="+Inf"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: HighLatencySpike
+        exp_alerts: []
+
+  - name: RemediationCircuitBreakerOpen pages as soon as the breaker escalates
+    interval: 5s
+    input_series:
+      - series: 'remediation_circuit_breaker_open{job="webhook",instance="webhook:8080",service="app"}'
+        values: "0 0 1x10"
+    alert_rule_test:
+      - eval_time: 5s
+        alertname: RemediationCircuitBreakerOpen
+        exp_alerts: []
+      - eval_time: 15s
+        alertname: RemediationCircuitBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              alertname: RemediationCircuitBreakerOpen
+              severity: critical
+              service: app
+            exp_annotations:
+              summary: "Automated remediation halted for app"
+              description: "The restart budget was exhausted; inspect GET /incidents, fix the root cause, then POST /circuit-breaker/reset."

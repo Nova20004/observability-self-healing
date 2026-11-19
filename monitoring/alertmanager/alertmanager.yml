@@ -1,0 +1,44 @@
+global:
+  resolve_timeout: 1m
+
+route:
+  # Alerts without a critical/warning severity are dropped; add Slack/PagerDuty receivers here.
+  receiver: blackhole
+  group_by: [alertname, service]
+  group_wait: 5s
+  group_interval: 15s
+  # Short on purpose: the receiver is a machine, and a still-firing alert must be re-sent
+  # soon after the webhook cooldown expires. The webhook cooldown bounds the restart rate.
+  repeat_interval: 1m
+  routes:
+    - receiver: remediation-webhook
+      matchers:
+        - severity=~"critical|warning"
+
+inhibit_rules:
+  # A dead service cannot burn CPU or serve slowly: do not double-remediate.
+  - source_matchers:
+      - alertname="ServiceDown"
+    target_matchers:
+      - alertname=~"HighCPUUsage|HighLatencySpike"
+    equal: [service]
+  # CPU saturation explains the latency: the restart runbook supersedes load-shedding.
+  - source_matchers:
+      - alertname="HighCPUUsage"
+    target_matchers:
+      - alertname="HighLatencySpike"
+    equal: [service]
+
+receivers:
+  - name: blackhole
+
+  - name: remediation-webhook
+    webhook_configs:
+      - url: http://webhook:8080/alerts
+        send_resolved: true
+        timeout: 30s
+        http_config:
+          authorization:
+            type: Bearer
+            # Injected by Docker Compose from WEBHOOK_TOKEN in .env (never committed).
+            credentials_file: /run/secrets/webhook_token

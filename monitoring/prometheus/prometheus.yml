@@ -1,0 +1,58 @@
+# Fast intervals are intentional: they keep the alert -> remediation demo under a minute.
+# For production, use 15s-30s scrape/evaluation intervals.
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+  external_labels:
+    stack: obs-selfheal
+    environment: local
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: prometheus
+
+  - job_name: app
+    static_configs:
+      - targets: ["app:8000"]
+        labels:
+          service: app
+
+  - job_name: webhook
+    # Keep the exporter's own `service` label (the remediated service) instead of `exported_service`.
+    honor_labels: true
+    static_configs:
+      - targets: ["webhook:8080"]
+        labels:
+          service: webhook
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          service: alertmanager
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+        labels:
+          service: loki
+
+  # On macOS this measures the Docker Desktop Linux VM; on a Linux VPS, see README for host-level mounts.
+  - job_name: node
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: node-exporter

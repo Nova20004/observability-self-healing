@@ -1,0 +1,54 @@
+# The `remediation` label selects the webhook runbook:
+#   restart   -> pre-mortem snapshot, container restart, post-heal /health verification
+#   shed_load -> graceful load-shedding while firing, traffic restored when resolved
+# The `service` label (set in prometheus.yml) selects the target from the webhook allowlist.
+groups:
+  - name: self-healing
+    interval: 5s
+    rules:
+      - alert: ServiceDown
+        expr: up{job="app"} == 0
+        for: 20s
+        labels:
+          severity: critical
+          remediation: restart
+        annotations:
+          summary: "{{ $labels.service }} is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }}; the remediation webhook will restart it."
+
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total{job="app"}[30s]) > 0.5
+        for: 15s
+        labels:
+          severity: warning
+          remediation: restart
+        annotations:
+          summary: "{{ $labels.service }} CPU usage is high"
+          description: "{{ $labels.instance }} is using {{ $value | humanizePercentage }} of a CPU core (threshold 50%)."
+
+      - alert: HighLatencySpike
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le, job, service, instance) (rate(http_request_duration_seconds_bucket{job="app"}[30s]))
+          ) > 0.25
+        for: 15s
+        labels:
+          severity: warning
+          remediation: shed_load
+        annotations:
+          summary: "{{ $labels.service }} p95 latency is high"
+          description: >-
+            {{ $labels.instance }} p95 latency is {{ $value | humanizeDuration }} (threshold 250ms);
+            load-shedding will be enabled.
+
+  - name: self-healing-meta
+    interval: 5s
+    rules:
+      - alert: RemediationCircuitBreakerOpen
+        expr: max by (service) (remediation_circuit_breaker_open{job="webhook"}) == 1
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Automated remediation halted for {{ $labels.service }}"
+          description: "The restart budget was exhausted; inspect GET /incidents, fix the root cause, then POST /circuit-breaker/reset."
