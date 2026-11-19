@@ -1,4 +1,4 @@
-FROM python:3.13.18-slim-trixie AS builder
+FROM python:3.15.2-slim-trixie AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -8,7 +8,7 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
 
-FROM python:3.13.18-slim-trixie AS runtime
+FROM python:3.15.2-slim-trixie AS runtime
 
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
