@@ -227,7 +227,7 @@ services:
 
   # No host mounts, no host PID/network: works unchanged on Docker Desktop (macOS) and Linux.
   node-exporter:
-    image: prom/node-exporter:v1.12.1
+    image: prom/node-exporter:v1.13.1
     <<: *hardening
     restart: unless-stopped
     read_only: true
