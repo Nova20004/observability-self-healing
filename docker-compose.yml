@@ -112,7 +112,7 @@ services:
   # Restart-only: POST is allowed solely on /containers/<name>/(restart|stop|kill).
   # CONTAINERS stays 0 on purpose: with POST=1 it would also open /containers/create and /exec.
   docker-proxy-restart:
-    image: tecnativa/docker-socket-proxy:v0.5.0
+    image: tecnativa/docker-socket-proxy:3.4
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -133,7 +133,7 @@ services:
 
   # GET-only: container/network metadata and container logs (pre-mortem forensics, promtail discovery).
   docker-proxy-ro:
-    image: tecnativa/docker-socket-proxy:v0.5.0
+    image: tecnativa/docker-socket-proxy:3.4
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
